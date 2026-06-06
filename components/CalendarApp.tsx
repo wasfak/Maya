@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition, useRef } from "react";
-import { ChevronLeft, ChevronRight, Plus, Trash2, X, Wallet, CalendarDays } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Trash2, X, Wallet, CalendarDays, LayoutList } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -13,7 +13,13 @@ interface Expenditure {
   amount: number;
 }
 
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAYS = ["أحد", "اثنين", "ثلاثاء", "أربعاء", "خميس", "جمعة", "سبت"];
+
+const MONTHS_AR = [
+  "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+  "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر",
+];
+const MONTHS_AR_SHORT = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 
 function toYMD(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -48,8 +54,24 @@ export default function CalendarApp() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState(year);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [editingDate, setEditingDate] = useState<Record<string, string>>({});
+  const [reportYear, setReportYear] = useState(today.getFullYear());
+  const [reportMonth, setReportMonth] = useState(today.getMonth());
+  const [reportData, setReportData] = useState<Expenditure[]>([]);
+  const [reportLoading, setReportLoading] = useState(false);
 
   const mk = monthKey(year, month);
+
+  useEffect(() => {
+    if (!reportOpen) return;
+    setReportLoading(true);
+    fetch(`/api/expenditures?month=${monthKey(reportYear, reportMonth)}`)
+      .then(r => r.json())
+      .then(data => setReportData(Array.isArray(data) ? data : []))
+      .catch(() => toast.error("Failed to load report"))
+      .finally(() => setReportLoading(false));
+  }, [reportOpen, reportYear, reportMonth]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -151,6 +173,88 @@ export default function CalendarApp() {
     }
   }
 
+  async function changeDate(id: string, newDate: string) {
+    const toastId = toast.loading("Updating date…");
+    try {
+      const res = await fetch(`/api/expenditures/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: newDate }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Expenditure = await res.json();
+      setExpenditures(prev => prev.map(e => e._id === id ? updated : e));
+      setEditingDate(prev => { const n = { ...prev }; delete n[id]; return n; });
+      toast.success("Date updated", { id: toastId });
+    } catch {
+      toast.error("Failed to update date", { id: toastId });
+    }
+  }
+
+  function openReport() {
+    setReportYear(year);
+    setReportMonth(month);
+    setEditingDate({});
+    setReportOpen(true);
+  }
+
+  function reportPrevMonth() {
+    if (reportMonth === 0) { setReportYear(y => y - 1); setReportMonth(11); }
+    else setReportMonth(m => m - 1);
+  }
+  function reportNextMonth() {
+    if (reportMonth === 11) { setReportYear(y => y + 1); setReportMonth(0); }
+    else setReportMonth(m => m + 1);
+  }
+
+  // The report operates on reportData (its own fetched set), but deletes/date-changes
+  // should also mirror into the calendar's expenditures if the months match.
+  async function reportDeleteExpenditure(id: string) {
+    const toastId = toast.loading("Deleting…");
+    try {
+      const res = await fetch(`/api/expenditures/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setReportData(prev => prev.filter(e => e._id !== id));
+      // mirror into calendar state if same month
+      setExpenditures(prev => prev.filter(e => e._id !== id));
+      toast.success("Expense deleted", { id: toastId });
+    } catch {
+      toast.error("Failed to delete expense", { id: toastId });
+    }
+  }
+
+  async function reportChangeDate(id: string, newDate: string) {
+    const toastId = toast.loading("Updating date…");
+    try {
+      const res = await fetch(`/api/expenditures/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: newDate }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Expenditure = await res.json();
+      // keep in report only if still in the same report month
+      const stillInMonth = newDate.startsWith(monthKey(reportYear, reportMonth));
+      setReportData(prev => stillInMonth
+        ? prev.map(e => e._id === id ? updated : e)
+        : prev.filter(e => e._id !== id)
+      );
+      // mirror into calendar state
+      setExpenditures(prev => prev.map(e => e._id === id ? updated : e));
+      setEditingDate(prev => { const n = { ...prev }; delete n[id]; return n; });
+      toast.success("Date updated", { id: toastId });
+    } catch {
+      toast.error("Failed to update date", { id: toastId });
+    }
+  }
+
+  // Group expenditures by date for report view
+  const sortedByDate = [...reportData].sort((a, b) => a.date.localeCompare(b.date));
+  const groupedByDate = sortedByDate.reduce<Record<string, Expenditure[]>>((acc, e) => {
+    (acc[e.date] ??= []).push(e);
+    return acc;
+  }, {});
+
   const todayStr = toYMD(today.getFullYear(), today.getMonth(), today.getDate());
 
   return (
@@ -162,11 +266,20 @@ export default function CalendarApp() {
             <div className="size-8 rounded-lg bg-violet-500/20 flex items-center justify-center">
               <Wallet className="size-4 text-violet-400" />
             </div>
-            <span className="font-semibold tracking-tight">Expense Tracker</span>
+            <span className="font-semibold tracking-tight"><span className="size-4 text-violet-400">Mayar</span> Tracker</span>
           </div>
-          <div className="text-sm text-zinc-400">
-            {new Date(year, month).toLocaleString("default", { month: "long" })}{" "}
-            <span className="text-zinc-100 font-semibold">${monthTotal.toFixed(2)}</span>
+          <div className="flex items-center gap-3">
+            <div className="text-sm text-zinc-400">
+              {MONTHS_AR[month]}{" "}
+              <span className="text-zinc-100 font-semibold">EGP {monthTotal.toFixed(2)}</span>
+            </div>
+            <button
+              onClick={openReport}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-zinc-100 text-xs font-medium transition-colors"
+            >
+              <LayoutList className="size-3.5" />
+              All expenses
+            </button>
           </div>
         </div>
       </header>
@@ -192,7 +305,7 @@ export default function CalendarApp() {
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-zinc-800 transition-colors group"
                 >
                   <h2 className="text-sm font-semibold tracking-wide text-zinc-100">
-                    {new Date(year, month).toLocaleString("default", { month: "long", year: "numeric" })}
+                    {MONTHS_AR[month]} {year}
                   </h2>
                   <CalendarDays className="size-3.5 text-zinc-500 group-hover:text-violet-400 transition-colors" />
                 </button>
@@ -218,7 +331,7 @@ export default function CalendarApp() {
 
                     {/* Month grid */}
                     <div className="grid grid-cols-3 gap-1.5">
-                      {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((name, i) => {
+                      {MONTHS_AR_SHORT.map((name, i) => {
                         const isCurrent = pickerYear === year && i === month;
                         return (
                           <button
@@ -251,7 +364,7 @@ export default function CalendarApp() {
             {/* Day headers */}
             <div className="grid grid-cols-7 text-center">
               {DAYS.map(d => (
-                <div key={d} className="text-[11px] font-medium text-zinc-500 pb-1 tracking-wider uppercase">
+                <div key={d} className=" font-semibold text-white pb-1 tracking-wider uppercase">
                   {d}
                 </div>
               ))}
@@ -304,7 +417,7 @@ export default function CalendarApp() {
                       {dayExps.length > 0 && (
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[10px] font-semibold text-emerald-400 leading-none">
-                            ${total.toFixed(0)}
+                            EGP{total.toFixed(0)}
                           </span>
                           <div className="flex gap-0.5">
                             {dayExps.slice(0, 3).map(e => (
@@ -330,21 +443,21 @@ export default function CalendarApp() {
               <div className="px-4 pt-5 pb-4 flex items-start justify-between">
                 <div>
                   <p className="font-semibold text-zinc-100">
-                    {new Date(selectedDate + "T00:00:00").toLocaleDateString("default", {
-                      weekday: "long",
-                      month: "short",
-                      day: "numeric",
-                    })}
+                    {(() => {
+                      const d = new Date(selectedDate + "T00:00:00");
+                      const dayNames = ["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
+                      return `${dayNames[d.getDay()]} ${d.getDate()} ${MONTHS_AR[d.getMonth()]}`;
+                    })()}
                   </p>
                   <div className="flex gap-3 mt-1.5">
                     <div className="text-xs text-zinc-500">
                       Day{" "}
-                      <span className="text-emerald-400 font-semibold">${dayTotal.toFixed(2)}</span>
+                      <span className="text-emerald-400 font-semibold">EGP {dayTotal.toFixed(2)}</span>
                     </div>
                     {weekTotal !== null && (
                       <div className="text-xs text-zinc-500">
                         Week{" "}
-                        <span className="text-zinc-300 font-semibold">${weekTotal.toFixed(2)}</span>
+                        <span className="text-zinc-300 font-semibold">EGP  {weekTotal.toFixed(2)}</span>
                       </div>
                     )}
                   </div>
@@ -379,7 +492,7 @@ export default function CalendarApp() {
                         <p className="text-sm font-medium text-zinc-200 truncate">{e.description}</p>
                       </div>
                       <span className="text-sm font-semibold text-emerald-400 shrink-0">
-                        ${e.amount.toFixed(2)}
+                      EGP {e.amount.toFixed(2)}
                       </span>
                       <button
                         onClick={() => deleteExpenditure(e._id)}
@@ -427,6 +540,144 @@ export default function CalendarApp() {
 
         </div>
       </div>
+
+      {/* Monthly report modal */}
+      {reportOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={e => { if (e.target === e.currentTarget) setReportOpen(false); }}
+        >
+          <div className="w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl bg-zinc-900 border border-zinc-700/60 shadow-2xl shadow-black/60">
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800 gap-4">
+              {/* Month navigator */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={reportPrevMonth}
+                  className="size-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                >
+                  <ChevronLeft className="size-3.5" />
+                </button>
+                <div className="text-center min-w-[130px]">
+                  <h3 className="font-semibold text-zinc-100 text-sm">
+                    {MONTHS_AR[reportMonth]} {reportYear}
+                  </h3>
+                  {reportLoading ? (
+                    <p className="text-xs text-zinc-500 mt-0.5">Loading…</p>
+                  ) : (
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      {reportData.length} expense{reportData.length !== 1 ? "s" : ""} ·{" "}
+                      <span className="text-emerald-400 font-semibold">
+                        EGP  {reportData.reduce((s, e) => s + e.amount, 0).toFixed(2)}
+                      </span>
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={reportNextMonth}
+                  className="size-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                >
+                  <ChevronRight className="size-3.5" />
+                </button>
+              </div>
+              <button
+                onClick={() => setReportOpen(false)}
+                className="size-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
+              {reportLoading ? (
+                <div className="flex items-center justify-center py-16 text-zinc-500 text-sm">Loading…</div>
+              ) : reportData.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-2 text-zinc-500">
+                  <LayoutList className="size-8 opacity-30" />
+                  <p className="text-sm">No expenses this month</p>
+                </div>
+              ) : (
+                Object.entries(groupedByDate).map(([date, exps]) => {
+                  const groupTotal = exps.reduce((s, e) => s + e.amount, 0);
+                  return (
+                    <div key={date} className="flex flex-col gap-2">
+                      {/* Date group header */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                          {new Date(date + "T00:00:00").toLocaleDateString("ar-EG", {
+                            weekday: "short", month: "short", day: "numeric",
+                          })}
+                        </span>
+                        <span className="text-xs font-semibold text-emerald-400">EGP {groupTotal.toFixed(2)}</span>
+                      </div>
+
+                      {/* Expense rows */}
+                      {exps.map(e => {
+                        const isEditing = editingDate[e._id] !== undefined;
+                        return (
+                          <div key={e._id} className="group flex items-center gap-3 rounded-xl bg-zinc-800/60 px-3 py-2.5 ring-1 ring-zinc-700/50">
+                            {/* Description */}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-zinc-200 truncate">{e.description}</p>
+                            </div>
+
+                            {/* Amount */}
+                            <span className="text-sm font-semibold text-emerald-400 shrink-0">
+                              EGP {e.amount.toFixed(2)}
+                            </span>
+
+                            {/* Date editor */}
+                            {isEditing ? (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <input
+                                  type="date"
+                                  defaultValue={e.date}
+                                  onChange={ev => setEditingDate(prev => ({ ...prev, [e._id]: ev.target.value }))}
+                                  className="h-7 rounded-lg border border-zinc-600 bg-zinc-800 px-2 text-xs text-zinc-100 outline-none focus:border-violet-500 transition-colors [color-scheme:dark]"
+                                />
+                                <button
+                                  onClick={() => reportChangeDate(e._id, editingDate[e._id] ?? e.date)}
+                                  className="h-7 px-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => setEditingDate(prev => { const n = { ...prev }; delete n[e._id]; return n; })}
+                                  className="size-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 transition-colors"
+                                >
+                                  <X className="size-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setEditingDate(prev => ({ ...prev, [e._id]: e.date }))}
+                                className="text-[10px] text-zinc-600 hover:text-violet-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100"
+                              >
+                                change date
+                              </button>
+                            )}
+
+                            {/* Delete */}
+                            {!isEditing && (
+                              <button
+                                onClick={() => reportDeleteExpenditure(e._id)}
+                                className="size-5 rounded flex items-center justify-center text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                              >
+                                <Trash2 className="size-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
